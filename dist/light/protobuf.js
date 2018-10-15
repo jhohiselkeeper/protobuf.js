@@ -1,6 +1,6 @@
 /*!
  * protobuf.js v6.8.8 (c) 2016, daniel wirtz
- * compiled thu, 19 jul 2018 00:33:25 utc
+ * compiled mon, 15 oct 2018 16:18:49 utc
  * licensed under the bsd-3-clause license
  * see: https://github.com/dcodeio/protobuf.js for details
  */
@@ -1492,7 +1492,8 @@ function decoder(mtype) {
     // Unknown fields
     } gen
             ("default:")
-                ("r.skipType(t&7)")
+                ("Object.defineProperty(m,\"__unknownFields\",{writable:true,configurable:true,enumerable:false })")
+                ("m[\"__unknownFields\"]=r.rawBytes(t,m[\"__unknownFields\"])")
                 ("break")
 
         ("}")
@@ -1607,6 +1608,10 @@ function encoder(mtype) {
 
         }
     }
+
+    // unkown fields
+    gen("if(m[\"__unknownFields\"])")
+        ("w.rawBytes(m[\"__unknownFields\"]);");
 
     return gen
     ("return w");
@@ -2798,7 +2803,7 @@ Namespace.arrayToJSON = arrayToJSON;
 Namespace.isReservedId = function isReservedId(reserved, id) {
     if (reserved)
         for (var i = 0; i < reserved.length; ++i)
-            if (typeof reserved[i] !== "string" && reserved[i][0] <= id && reserved[i][1] >= id)
+            if (typeof reserved[i] !== "string" && reserved[i][0] <= id && reserved[i][1] > id)
                 return true;
     return false;
 };
@@ -3953,7 +3958,45 @@ Reader.prototype.skipType = function(wireType) {
     return this;
 };
 
-Reader._configure = function(BufferReader_) {
+/**
+ * Returns the next element of the specified wire type as bytes
+ * @param {number} id_wireType field id and wire type
+ * @param {Uint8Array} append previously encountered unknown fields, if any
+ * @returns {Uint8Array} value read
+ */
+Reader.prototype.rawBytes = function read_raw_bytes(id_wireType, append) {
+    var start = this.pos;
+    do {  // roll id_wireType back
+        --start;
+        this.pos = start;
+    } while (this.uint32() !== id_wireType);
+
+    this.skipType(id_wireType & 7);
+
+    var skipped;
+
+    /* istanbul ignore if */
+    if (Array.isArray(this.buf)) { // plain array
+        skipped = this.buf.slice(start, this.pos);
+        if (append)
+            skipped = append.concat(skipped);
+    }
+    else {
+        skipped = this._slice.call(this.buf, start, this.pos);
+        if (append) {
+            var merged = new this.buf.constructor(skipped.length + append.length);
+            for (var i = 0; i < append.length; ++i)
+                merged[i] = append[i];
+            for (var j = 0; j < skipped.length; ++j)
+                merged[j + append.length] = skipped[j];
+            skipped = merged;
+        }
+    }
+
+    return skipped;
+};
+
+Reader._configure = function (BufferReader_) {
     BufferReader = BufferReader_;
 
     var fn = util.Long ? "toLong" : /* istanbul ignore next */ "toNumber";
@@ -5273,6 +5316,15 @@ Type.prototype.decodeDelimited = function decodeDelimited(reader) {
     if (!(reader instanceof Reader))
         reader = Reader.create(reader);
     return this.decode(reader, reader.uint32());
+};
+
+/**
+ * Removes unknown fields that have been deserialized into the message
+ * @param {Message<{}>|Object.<string,*>} message Message instance or plain object
+ * @returns {Message<{}>|Object.<string,*>} message with unknown fields stripped
+ */
+Type.prototype.discardUnknownFields = function discardUnknownFields(message) {
+    delete message["__unknownFields"];
 };
 
 /**
@@ -6957,12 +7009,8 @@ Writer.prototype.double = function write_double(value) {
     return this._push(util.float.writeDoubleLE, 8, value);
 };
 
-var writeBytes = util.Array.prototype.set
-    ? function writeBytes_set(val, buf, pos) {
-        buf.set(val, pos); // also works for plain array values
-    }
-    /* istanbul ignore next */
-    : function writeBytes_for(val, buf, pos) {
+/* istanbul ignore next */
+var writeBytes = function writeBytes_for(val, buf, pos) {
         for (var i = 0; i < val.length; ++i)
             buf[pos + i] = val[i];
     };
@@ -6983,6 +7031,16 @@ Writer.prototype.bytes = function write_bytes(value) {
     }
     return this.uint32(len)._push(writeBytes, len, value);
 };
+
+/**
+ * Writes raw bytes with no wire type of length prefixed
+ * @param {Uint8Array} value bytes to add
+ * @returns {Writer} `this`
+ */
+Writer.prototype.rawBytes = function write_raw_bytes(value) {
+    return this._push(writeBytes, value.length, value);
+};
+
 
 /**
  * Writes a string.
